@@ -94,9 +94,9 @@ typedef struct taskq {
 	struct list_head	tq_thread_list;	/* list of all threads */
 	struct list_head	tq_active_list;	/* list of active threads */
 	int			tq_nactive;	/* # of active threads */
-	//JW
+	//ctxt_modi
 	int			tq_ctxt;
-	int			jw;
+	int			tq_ctxt_d;
 	int			tq_nthreads;	/* # of existing threads */
 	int			tq_nspawn;	/* # of threads being spawned */
 	int			tq_maxthreads;	/* # of threads maximum */
@@ -154,13 +154,15 @@ extern taskq_t *system_delay_taskq;
 /* List of all taskqs */
 extern struct list_head tq_list;
 extern struct rw_semaphore tq_list_sem;
-//chksm
+//ctxt_modi
 extern int charToInt(const char *);
 extern struct file* file_open(const char *, int, int);
 extern void file_close(struct file *);
 extern int file_read (struct file *, unsigned char *, unsigned int);
 extern int file_lseek(struct file *, off_t, int);
-extern int get_ctxt_zfs(taskq_t *);
+extern int get_iss_ctxt(taskq_t *);
+extern int get_cks_ctxt(taskq_t *);
+extern int get_dp_ctxt(taskq_t *);
 extern int get_random_id(size_t);
 
 extern taskqid_t taskq_dispatch(taskq_t *, task_func_t, void *, uint_t);
@@ -168,15 +170,15 @@ extern taskqid_t taskq_dispatch_delay(taskq_t *, task_func_t, void *,
     uint_t, clock_t);
 extern void taskq_dispatch_ent(taskq_t *, task_func_t, void *, uint_t,
     taskq_ent_t *);
-//chksm
-extern void chksm_taskq_dispatch_ent(taskq_t *, task_func_t, void *, uint_t,
+//cksum_modi
+extern void cksum_taskq_dispatch_ent(taskq_t *, task_func_t, void *, uint_t,
     taskq_ent_t *, unsigned int);
 
 extern int taskq_empty_ent(taskq_ent_t *);
 extern void taskq_init_ent(taskq_ent_t *);
 extern taskq_t *taskq_create(const char *, int, pri_t, int, int, uint_t);
-//chksm
-extern taskq_t *chksm_taskq_create(const char *, int, pri_t, int, int, uint_t);
+//cksum_modi
+extern taskq_t *cksum_taskq_create(const char *, int, pri_t, int, int, uint_t);
 
 extern void taskq_destroy(taskq_t *);
 extern void taskq_wait_id(taskq_t *, taskqid_t);
@@ -187,9 +189,9 @@ extern int taskq_member(taskq_t *, kthread_t *);
 
 #define	taskq_create_proc(name, nthreads, pri, min, max, proc, flags) \
     taskq_create(name, nthreads, pri, min, max, flags)
-//chksm
-#define	chksm_taskq_create_proc(name, nthreads, pri, min, max, proc, flags) \
-    chksm_taskq_create(name, nthreads, pri, min, max, flags)
+//cksum_modi
+#define	cksum_taskq_create_proc(name, nthreads, pri, min, max, proc, flags) \
+    cksum_taskq_create(name, nthreads, pri, min, max, flags)
 
 #define	taskq_create_sysdc(name, nthreads, min, max, proc, dc, flags) \
     taskq_create(name, nthreads, maxclsyspri, min, max, flags)

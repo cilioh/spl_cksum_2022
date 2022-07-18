@@ -676,18 +676,35 @@ spl_kvmem_fini(void)
 	spl_kmem_fini();
 }
 
-//JW
+//ctxt_modi
 #define MAX_SIZE (PAGE_SIZE *2)
-#define DEVICE_NAME "mctxt"
-#define CLASS_NAME "mclass"
 
-static struct class* class;
-static struct device* device;
-static int major;
-static char *sh_mem = NULL;
+#define ISS_DEVICE_NAME "z_wr_iss"
+#define CKS_DEVICE_NAME "z_wr_cks"
+#define DP_DEVICE_NAME "dp_sync_taskq"
+
+#define ISS_CLASS_NAME "iss_class"
+#define CKS_CLASS_NAME "cks_class"
+#define DP_CLASS_NAME "dp_class"
+
+static struct class* iss_class;
+static struct class* cks_class;
+static struct class* dp_class;
+
+static struct device* iss_device;
+static struct device* cks_device;
+static struct device* dp_device;
+
+static int iss_major, cks_major, dp_major;
+
+static char *iss_sh_mem = NULL;
+static char *cks_sh_mem = NULL;
+static char *dp_sh_mem = NULL;
 
 //static DEFINE_MUTEX(mctxt_mutex); 
-static kmutex_t mctxt_mutex;
+static kmutex_t iss_mctxt_mutex;
+static kmutex_t cks_mctxt_mutex;
+static kmutex_t dp_mctxt_mutex;
 
 static int mctxt_release(struct inode *inodep, struct file *filep)
 {
@@ -718,7 +735,7 @@ static int mctxt_open(struct inode *inodep, struct file *filep)
 		return ret;
 }
 
-static int mctxt_mmap(struct file *filp, struct vm_area_struct *vma)
+static int mctxt_mmap_iss(struct file *filp, struct vm_area_struct *vma)
 {
 	int ret = 0;
 	struct page *page = NULL;
@@ -729,7 +746,7 @@ static int mctxt_mmap(struct file *filp, struct vm_area_struct *vma)
 		goto out;
 	}
 
-	page = virt_to_page((unsigned long)sh_mem + (vma->vm_pgoff << PAGE_SHIFT));
+	page = virt_to_page((unsigned long)iss_sh_mem + (vma->vm_pgoff << PAGE_SHIFT));
 	ret = remap_pfn_range(vma, vma->vm_start, page_to_pfn(page), size, vma->vm_page_prot);
 	if(ret != 0) {
 		goto out;
@@ -740,7 +757,51 @@ static int mctxt_mmap(struct file *filp, struct vm_area_struct *vma)
 
 }
 
-static ssize_t mctxt_read(struct file *filep, char *buffer, size_t len, loff_t *offset)
+static int mctxt_mmap_cks(struct file *filp, struct vm_area_struct *vma)
+{
+	int ret = 0;
+	struct page *page = NULL;
+	unsigned long size = (unsigned long)(vma->vm_end - vma->vm_start);
+
+	if(size > MAX_SIZE) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	page = virt_to_page((unsigned long)cks_sh_mem + (vma->vm_pgoff << PAGE_SHIFT));
+	ret = remap_pfn_range(vma, vma->vm_start, page_to_pfn(page), size, vma->vm_page_prot);
+	if(ret != 0) {
+		goto out;
+	}
+
+	out:
+		return ret;
+
+}
+
+static int mctxt_mmap_dp(struct file *filp, struct vm_area_struct *vma)
+{
+	int ret = 0;
+	struct page *page = NULL;
+	unsigned long size = (unsigned long)(vma->vm_end - vma->vm_start);
+
+	if(size > MAX_SIZE) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	page = virt_to_page((unsigned long)dp_sh_mem + (vma->vm_pgoff << PAGE_SHIFT));
+	ret = remap_pfn_range(vma, vma->vm_start, page_to_pfn(page), size, vma->vm_page_prot);
+	if(ret != 0) {
+		goto out;
+	}
+
+	out:
+		return ret;
+
+}
+
+static ssize_t mctxt_read_iss(struct file *filep, char *buffer, size_t len, loff_t *offset)
 {
 	int ret;
 
@@ -751,7 +812,7 @@ static ssize_t mctxt_read(struct file *filep, char *buffer, size_t len, loff_t *
 		goto out;
 	}
 
-	if(copy_to_user(buffer, sh_mem, len) == 0) {
+	if(copy_to_user(buffer, iss_sh_mem, len) == 0) {
 		//printk(KERN_INFO "mctxt: Device read\n");
 		ret = len;
 	} else {
@@ -762,11 +823,55 @@ static ssize_t mctxt_read(struct file *filep, char *buffer, size_t len, loff_t *
 		return ret;
 }
 
-static ssize_t mctxt_write(struct file *filep, const char *buffer, size_t len, loff_t *offset)
+static ssize_t mctxt_read_cks(struct file *filep, char *buffer, size_t len, loff_t *offset)
 {
 	int ret;
 
-	if(copy_from_user(sh_mem, buffer, len)) {
+
+	if(len > MAX_SIZE) {
+		printk(KERN_INFO "read overflow!\n");
+		ret = -EFAULT;
+		goto out;
+	}
+
+	if(copy_to_user(buffer, cks_sh_mem, len) == 0) {
+		//printk(KERN_INFO "mctxt: Device read\n");
+		ret = len;
+	} else {
+		ret = -EFAULT;
+	}
+
+	out:
+		return ret;
+}
+
+static ssize_t mctxt_read_dp(struct file *filep, char *buffer, size_t len, loff_t *offset)
+{
+	int ret;
+
+
+	if(len > MAX_SIZE) {
+		printk(KERN_INFO "read overflow!\n");
+		ret = -EFAULT;
+		goto out;
+	}
+
+	if(copy_to_user(buffer, dp_sh_mem, len) == 0) {
+		//printk(KERN_INFO "mctxt: Device read\n");
+		ret = len;
+	} else {
+		ret = -EFAULT;
+	}
+
+	out:
+		return ret;
+}
+
+static ssize_t mctxt_write_iss(struct file *filep, const char *buffer, size_t len, loff_t *offset)
+{
+	int ret;
+
+	if(copy_from_user(iss_sh_mem, buffer, len)) {
 		pr_err("mctxt: write fault!\n");
 		ret = -EFAULT;
 		goto out;
@@ -778,52 +883,181 @@ static ssize_t mctxt_write(struct file *filep, const char *buffer, size_t len, l
 		return ret;
 }
 
-static const struct file_operations mctxt_fops = {
+static ssize_t mctxt_write_cks(struct file *filep, const char *buffer, size_t len, loff_t *offset)
+{
+	int ret;
+
+	if(copy_from_user(cks_sh_mem, buffer, len)) {
+		pr_err("mctxt: write fault!\n");
+		ret = -EFAULT;
+		goto out;
+	}
+	//printk(KERN_INFO "mctxt: Device write\n", len);
+	ret = len;
+	
+	out:
+		return ret;
+}
+
+static ssize_t mctxt_write_dp(struct file *filep, const char *buffer, size_t len, loff_t *offset)
+{
+	int ret;
+
+	if(copy_from_user(dp_sh_mem, buffer, len)) {
+		pr_err("mctxt: write fault!\n");
+		ret = -EFAULT;
+		goto out;
+	}
+	//printk(KERN_INFO "mctxt: Device write\n", len);
+	ret = len;
+	
+	out:
+		return ret;
+}
+
+static const struct file_operations mctxt_fops_iss = {
 	.open = mctxt_open,
-	.read = mctxt_read, 
-	.write = mctxt_write,
+	.read = mctxt_read_iss, 
+	.write = mctxt_write_iss,
 	.release = mctxt_release,
-	.mmap = mctxt_mmap,
+	.mmap = mctxt_mmap_iss,
 	.owner = THIS_MODULE,
 };
+
+
+static const struct file_operations mctxt_fops_cks = {
+	.open = mctxt_open,
+	.read = mctxt_read_cks, 
+	.write = mctxt_write_cks,
+	.release = mctxt_release,
+	.mmap = mctxt_mmap_cks,
+	.owner = THIS_MODULE,
+};
+
+
+static const struct file_operations mctxt_fops_dp = {
+	.open = mctxt_open,
+	.read = mctxt_read_dp, 
+	.write = mctxt_write_dp,
+	.release = mctxt_release,
+	.mmap = mctxt_mmap_dp,
+	.owner = THIS_MODULE,
+};
+
 
 static int __init
 spl_init(void)
 {
-	int rc = 0;
-
-	//JW
-	major = register_chrdev(0, DEVICE_NAME, &mctxt_fops);
-	if(major < 0) {
-		printk(KERN_INFO "mctxt: fail to register major number!");
-		rc = major;
+	int rc= 0;
+	
+	//ctxt_modi
+	iss_major = register_chrdev(0, ISS_DEVICE_NAME, &mctxt_fops_iss);
+	if(iss_major < 0) {
+		printk(KERN_INFO "mctxt: failed to register ISS major number!");
+		rc = iss_major;
+		goto norm;
+	}
+	iss_class = class_create(THIS_MODULE, ISS_CLASS_NAME);
+	if (IS_ERR(iss_class)) {
+		unregister_chrdev(iss_major, ISS_DEVICE_NAME);
+		printk(KERN_INFO "mctxt: failed to register ISS device class");
+		rc = PTR_ERR(iss_class);
 		goto norm;
 	}
 	
-	class = class_create(THIS_MODULE, CLASS_NAME);
-	if (IS_ERR(class)) {
-		unregister_chrdev(major, DEVICE_NAME);
-		printk(KERN_INFO "mctxt: failed to register device class");
-		rc = PTR_ERR(class);
+	iss_device = device_create(iss_class, NULL, MKDEV(iss_major, 0), NULL, ISS_DEVICE_NAME);
+	if (IS_ERR(iss_device)) {
+		class_destroy(iss_class);
+		unregister_chrdev(iss_major, ISS_DEVICE_NAME);
+		printk (KERN_INFO "mctxt: failed to register ISS device");
+		rc = PTR_ERR(iss_device);
 		goto norm;
 	}
-	device = device_create(class, NULL, MKDEV(major, 0), NULL, DEVICE_NAME);
-	if (IS_ERR(device)) {
-		class_destroy(class);
-		unregister_chrdev(major, DEVICE_NAME);
-		rc = PTR_ERR(device);
-		goto norm;
-	}
-	sh_mem = kmalloc(MAX_SIZE, GFP_KERNEL);
-	if(sh_mem == NULL) {
+	
+	iss_sh_mem = kmalloc(MAX_SIZE, GFP_KERNEL);
+	if(iss_sh_mem == NULL) {
+		printk(KERN_INFO "mctxt: failed to malloc ISS memory\n");
 		rc = -ENOMEM;
 		goto norm;
 	}
-	sprintf(sh_mem, "0\n");
-	mutex_init(&mctxt_mutex, NULL, MUTEX_DEFAULT, NULL);
-	//int tmp = get_ctxt_zfs();
-	printk(KERN_INFO "mctxt: successfully initialize mctxt file");
+
+	sprintf(iss_sh_mem, "0\n");
+	mutex_init(&iss_mctxt_mutex, NULL, MUTEX_DEFAULT, NULL);
+	printk(KERN_INFO "mctxt: successfully initialize z_wr_iss file");
+	
 	//
+	//
+	//
+	cks_major = register_chrdev(0, CKS_DEVICE_NAME, &mctxt_fops_cks);
+	if(cks_major < 0) {
+		printk(KERN_INFO "mctxt: failed to register CKS major number!");
+		rc = cks_major;
+		goto norm;
+	}
+	cks_class = class_create(THIS_MODULE, CKS_CLASS_NAME);
+	if (IS_ERR(cks_class)) {
+		unregister_chrdev(cks_major, CKS_DEVICE_NAME);
+		printk(KERN_INFO "mctxt: failed to register CKS device class");
+		rc = PTR_ERR(cks_class);
+		goto norm;
+	}
+	
+	cks_device = device_create(cks_class, NULL, MKDEV(cks_major, 0), NULL, CKS_DEVICE_NAME);
+	if (IS_ERR(cks_device)) {
+		class_destroy(cks_class);
+		unregister_chrdev(cks_major, CKS_DEVICE_NAME);
+		printk (KERN_INFO "mctxt: failed to register CKS device");
+		rc = PTR_ERR(cks_device);
+		goto norm;
+	}
+	
+	cks_sh_mem = kmalloc(MAX_SIZE, GFP_KERNEL);
+	if(cks_sh_mem == NULL) {
+		printk(KERN_INFO "mctxt: failed to malloc CKS memory\n");
+		rc = -ENOMEM;
+		goto norm;
+	}
+
+	sprintf(cks_sh_mem, "0\n");
+	mutex_init(&cks_mctxt_mutex, NULL, MUTEX_DEFAULT, NULL);
+	printk(KERN_INFO "mctxt: successfully initialize z_wr_cks file");
+	//
+	//
+	//
+	dp_major = register_chrdev(0, DP_DEVICE_NAME, &mctxt_fops_dp);
+	if(dp_major < 0) {
+		printk(KERN_INFO "mctxt: failed to register DP major number!");
+		rc = dp_major;
+		goto norm;
+	}
+	dp_class = class_create(THIS_MODULE, DP_CLASS_NAME);
+	if (IS_ERR(dp_class)) {
+		unregister_chrdev(dp_major, DP_DEVICE_NAME);
+		printk(KERN_INFO "mctxt: failed to register DP device class");
+		rc = PTR_ERR(dp_class);
+		goto norm;
+	}
+	
+	dp_device = device_create(dp_class, NULL, MKDEV(dp_major, 0), NULL, DP_DEVICE_NAME);
+	if (IS_ERR(dp_device)) {
+		class_destroy(dp_class);
+		unregister_chrdev(dp_major, DP_DEVICE_NAME);
+		printk (KERN_INFO "mctxt: failed to register DP device");
+		rc = PTR_ERR(dp_device);
+		goto norm;
+	}
+	
+	dp_sh_mem = kmalloc(MAX_SIZE, GFP_KERNEL);
+	if(dp_sh_mem == NULL) {
+		printk(KERN_INFO "mctxt: failed to malloc DP memory\n");
+		rc = -ENOMEM;
+		goto norm;
+	}
+
+	sprintf(dp_sh_mem, "0\n");
+	mutex_init(&dp_mctxt_mutex, NULL, MUTEX_DEFAULT, NULL);
+	printk(KERN_INFO "mctxt: successfully initialize dp_sync_taskq file");
+	
 
 norm:
 	bzero(&p0, sizeof (proc_t));
@@ -906,12 +1140,29 @@ spl_fini(void)
 	spl_kvmem_fini();
 
 	//JW
-	mutex_destroy(&mctxt_mutex);
-	device_destroy(class, MKDEV(major, 0));
-	class_unregister(class);
-	class_destroy(class);
-	unregister_chrdev(major, DEVICE_NAME);
-	printk(KERN_INFO "mctxt: unregistered!");
+	mutex_destroy(&iss_mctxt_mutex);
+	mutex_destroy(&cks_mctxt_mutex);
+	mutex_destroy(&dp_mctxt_mutex);
+	
+	device_destroy(iss_class, MKDEV(iss_major, 0));
+	device_destroy(cks_class, MKDEV(cks_major, 0));
+	device_destroy(dp_class, MKDEV(dp_major, 0));
+	
+	class_unregister(iss_class);
+	class_unregister(cks_class);
+	class_unregister(dp_class);
+	
+	class_destroy(iss_class);
+	class_destroy(cks_class);
+	class_destroy(dp_class);
+	
+	unregister_chrdev(iss_major, ISS_DEVICE_NAME);
+	unregister_chrdev(cks_major, CKS_DEVICE_NAME);
+	unregister_chrdev(dp_major, DP_DEVICE_NAME);
+
+	printk(KERN_INFO "mctxt: z_wr_iss unregistered!");
+	printk(KERN_INFO "mctxt: z_wr_cks unregistered!");
+	printk(KERN_INFO "mctxt: dp_sync_taskq unregistered!");
 	//
 }
 

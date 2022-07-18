@@ -28,11 +28,13 @@
 #include <sys/kmem.h>
 #include <sys/tsd.h>
 
-//JW
+//ctxt_modi
 #include <linux/uaccess.h>
 #include <linux/kernel.h>
 
-#define DEVICE_FILENAME "/dev/mctxt"
+#define ISS_DEVICE_FILENAME "/dev/z_wr_iss"
+#define CKS_DEVICE_FILENAME "/dev/z_wr_cks"
+#define DP_DEVICE_FILENAME "/dev/dp_sync_taskq"
 
 int charToInt(const char *s)
 {
@@ -85,48 +87,90 @@ int file_lseek(struct file *file, off_t offset, int whence)
 {
 	return vfs_llseek(file, offset, whence);
 }
-/*
-int get_ctxt_zfs(void)
-{
-	struct file *filp = file_open("/mnt/share/cykim/backup/ctxt_zfs", O_RDONLY, 0);
-	
-	if(NULL != filp)
-	{
-		char buffer[20] = {0, };
-		char *pbuffer = buffer;
-		
-		file_lseek(filp, 0, SEEK_SET);
-		
-		//while((pbuffer != buffer + sizeof(buffer)) &&
-		//	(1 == file_read(filp, pbuffer, 1)))
-		//	pbuffer++;
-			
-		memset(buffer, 0x00, sizeof(buffer));
-		file_read(filp, buffer, sizeof(buffer) - 1);
 
-		//tq->tq_ctxt = charToInt(buffer);
-		//printk(KERN_INFO "ctxt_zfs: %d\n", charToInt(buffer));
-
-		file_close(filp);
-
-		return charToInt(buffer);
-	}
-
-	return 0;
-}
-*/
-int jw=0;
-int get_ctxt_zfs(taskq_t *tq)
+int get_iss_ctxt(taskq_t *tq)
 {
 	struct file *filp = NULL;
 	mm_segment_t fs;
 	char buff[32];
 	int ret;
-	//if (jw%100 != 0)
-	//	goto out;
-	//jw++;
 
-	filp = filp_open(DEVICE_FILENAME, O_RDONLY|O_NDELAY, 0);
+	filp = filp_open(ISS_DEVICE_FILENAME, O_RDONLY|O_NDELAY, 0);
+	if(NULL != filp){
+		file_read(filp, buff, 32);
+		file_close(filp);
+		return charToInt(buff);
+	}
+	else {
+		filp_close(filp, NULL);
+		return 0;
+	}
+
+out:
+	return 0;
+}
+
+
+int get_cks_ctxt(taskq_t *tq)
+{
+	struct file *filp = NULL;
+	mm_segment_t fs;
+	char buff[32];
+	int ret;
+
+	filp = filp_open(CKS_DEVICE_FILENAME, O_RDONLY|O_NDELAY, 0);
+	if(NULL != filp){
+		//file_lseek(filp, 0, SEEK_SET);
+		//memset(buff, 0x00, 32);
+		file_read(filp, buff, 32);
+		//file_close(filp);
+		//printk(KERN_INFO "reading from kernel: %d\n", charToInt(buff));
+		//tq->tq_ctxt = charToInt(buff);		
+		file_close(filp);
+		return charToInt(buff);
+	}
+	else {
+		filp_close(filp, NULL);
+		return 0;
+	}
+/*
+	int ret;
+	int fd = filp_open(CKS_DEVICE_FILENAME, O_RDONLY|O_NDELAY, 0);
+	if (fd == -1)
+		return 0;
+	struct stat fileInfo = {0};
+	if(fstat(fd, &fileInfo) == -1)
+		return 0;
+	if(fileInfo.st_size == 0)
+		return 0;
+	
+	char* buff = mmap(0, fileInfo.st_size,
+		PROT_READ, MAP_FILE|MAP_PRIVATE,
+		fd, 0
+	);
+	if(map == MAP_FAILED){
+		filp_close(fd);
+		return 0;
+	}
+	else {
+		ret = charToInt(buff);
+		munmap(map, fileInfo.st_size);
+		filp_close(fd);
+		return ret;
+	}
+*/
+out:
+	return 0;
+}
+
+int get_dp_ctxt(taskq_t *tq)
+{
+	struct file *filp = NULL;
+	mm_segment_t fs;
+	char buff[32];
+	int ret;
+
+	filp = filp_open(DP_DEVICE_FILENAME, O_RDONLY|O_NDELAY, 0);
 	if(NULL != filp){
 		//file_lseek(filp, 0, SEEK_SET);
 		//memset(buff, 0x00, 32);
@@ -145,6 +189,8 @@ int get_ctxt_zfs(taskq_t *tq)
 out:
 	return 0;
 }
+
+
 
 int get_random_id(size_t bytes)
 {
@@ -171,7 +217,9 @@ EXPORT_SYMBOL(file_open);
 EXPORT_SYMBOL(file_close);
 EXPORT_SYMBOL(file_read);
 EXPORT_SYMBOL(file_lseek);
-EXPORT_SYMBOL(get_ctxt_zfs);
+EXPORT_SYMBOL(get_iss_ctxt);
+EXPORT_SYMBOL(get_cks_ctxt);
+EXPORT_SYMBOL(get_dp_ctxt);
 EXPORT_SYMBOL(get_random_id);
 
 int spl_taskq_thread_bind = 0;
@@ -204,8 +252,8 @@ EXPORT_SYMBOL(system_delay_taskq);
 static taskq_t *dynamic_taskq;
 static taskq_thread_t *taskq_thread_create(taskq_t *);
 
-//CHKSM
-static taskq_thread_t *chksm_taskq_thread_create(taskq_t *);
+//CKSUM
+static taskq_thread_t *cksum_taskq_thread_create(taskq_t *);
 
 /* List of all taskqs */
 LIST_HEAD(tq_list);
@@ -828,7 +876,6 @@ out:
 }
 EXPORT_SYMBOL(taskq_dispatch_delay);
 
-int jjww = 0;
 void
 taskq_dispatch_ent(taskq_t *tq, task_func_t func, void *arg, uint_t flags,
     taskq_ent_t *t)
@@ -911,7 +958,7 @@ out2:
 EXPORT_SYMBOL(taskq_dispatch_ent);
 
 void
-chksm_taskq_dispatch_ent(taskq_t *tq, task_func_t func, void *arg, uint_t flags,
+cksum_taskq_dispatch_ent(taskq_t *tq, task_func_t func, void *arg, uint_t flags,
     taskq_ent_t *t, unsigned int id)
 {
 	unsigned long irqflags;
@@ -925,9 +972,9 @@ chksm_taskq_dispatch_ent(taskq_t *tq, task_func_t func, void *arg, uint_t flags,
 	
 	ASSERT(taskq_empty_ent(t));
 
-	//printk(KERN_WARNING "[B]SPL-CHK: name:%s tqent_id:%u nthreads:%d nactive:%d [%u][%d] \n", tq->tq_name, tq->tq_next_id, tq->tq_nthreads, tq->tq_nactive, id, tq->jw);
+	//printk(KERN_WARNING "SPL-CHK: name:%s tqent_id:%u nthreads:%d nactive:%d [%u] \n", tq->tq_name, tq->tq_next_id, tq->tq_nthreads, tq->tq_nactive, id);
+	
 	list_add_tail(&t->tqent_list, &tq->tq_pend_list);
-	//tq->jw += 1;
 
 	t->tqent_id = tq->tq_next_id;
 	tq->tq_next_id++;
@@ -945,7 +992,7 @@ chksm_taskq_dispatch_ent(taskq_t *tq, task_func_t func, void *arg, uint_t flags,
 	
 	spin_unlock_irqrestore(&tq->tq_lock, irqflags);
 }
-EXPORT_SYMBOL(chksm_taskq_dispatch_ent);
+EXPORT_SYMBOL(cksum_taskq_dispatch_ent);
 
 
 
@@ -1141,7 +1188,7 @@ taskq_thread(void *args)
 			//if(t->tqent_zio == 2)
 			//	continue;
 			if(t->tqent_zio == 1){
-				//printk(KERN_WARNING "SPL-THR: name:%s nactive:%d [%u] \n", tq->tq_name, tq->tq_nactive, t->tqent_zio_id);
+			//	printk(KERN_WARNING "SPL-THR: name:%s nactive:%d [%u] \n", tq->tq_name, tq->tq_nactive, t->tqent_zio_id);
 				t->tqent_zio = 2;
 				//list_del_init(&t->tqent_list);
 			}
@@ -1165,7 +1212,6 @@ taskq_thread(void *args)
 			//if(t->tqent_zio != 0)
 			//	printk(KERN_WARNING "[D]SPL-CHK: name:%s tqent_id:%u nactive:%d [%u] \n", tq->tq_name, t->tqent_id, tq->tq_nactive, t->tqent_zio_id);
 			list_del_init(&t->tqent_list);
-			//tq->jw -= 1;
 
 			/*
 			 * A TQENT_FLAG_PREALLOC task may be reused or freed
@@ -1199,6 +1245,13 @@ taskq_thread(void *args)
 			tq->tq_nactive++;
 			spin_unlock_irqrestore(&tq->tq_lock, flags);
 			
+			//cksum_modi
+			//if(t->tqent_zio == 1){
+			//	printk(KERN_WARNING "SPL-THR: name:%s nthreads:%d nactive:%d [%u] \n", tq->tq_name, tq->tq_nthreads, tq->tq_nactive, t->tqent_zio_id);
+			//	t->tqent_zio = 2;
+			//}
+			
+	
 			/* Perform the requested task */
 			t->tqent_func(t->tqent_arg);
 
@@ -1315,9 +1368,9 @@ taskq_create(const char *name, int nthreads, pri_t pri,
 	INIT_LIST_HEAD(&tq->tq_active_list);
 	tq->tq_name = strdup(name);
 	tq->tq_nactive = 0;
-	//JW
+	//ctxt_modi
 	tq->tq_ctxt = 0;
-	tq->jw = 0;
+	tq->tq_ctxt_d = 0;
 	tq->tq_nthreads = 0;
 	tq->tq_nspawn = 0;
 	tq->tq_maxthreads = nthreads;
@@ -1382,11 +1435,11 @@ taskq_create(const char *name, int nthreads, pri_t pri,
 EXPORT_SYMBOL(taskq_create);
 
 
-//CHKSM
+//CKSUM
 //
 /*
 static int
-chksm_taskq_thread(void *args)
+cksum_taskq_thread(void *args)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	sigset_t blocked;
@@ -1449,7 +1502,6 @@ chksm_taskq_thread(void *args)
 				t->tqent_zio = 2;
 			}
 			list_del_init(&t->tqent_list);
-			//tq->jw -= 1;
 
 			tqt->tqt_id = t->tqent_id;
 			tqt->tqt_flags = t->tqent_flags;
@@ -1522,7 +1574,7 @@ error:
 */
 
 static int
-chksm_taskq_thread(void *args)
+cksum_taskq_thread(void *args)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	sigset_t blocked;
@@ -1540,7 +1592,7 @@ chksm_taskq_thread(void *args)
 
 	(void) spl_fstrans_mark();
 
-//printk(KERN_WARNING "CHKSM_TASKQ_THREAD: name:%s nthreads:%d \n", tq->tq_name, tq->tq_nthreads);
+//printk(KERN_WARNING "CKSUM_TASKQ_THREAD: name:%s nthreads:%d \n", tq->tq_name, tq->tq_nthreads);
 	
 	sigfillset(&blocked);
 	sigprocmask(SIG_BLOCK, &blocked, NULL);
@@ -1594,7 +1646,6 @@ chksm_taskq_thread(void *args)
 			
 			list_del_init(&t->tqent_list);
 			//spin_unlock(&t->tqent_lock);
-			//tq->jw -= 1;
 			
 			//--
 			tqt->tqt_id = t->tqent_id;
@@ -1654,7 +1705,7 @@ error:
 }
 
 static taskq_thread_t *
-chksm_taskq_thread_create(taskq_t *tq)
+cksum_taskq_thread_create(taskq_t *tq)
 {
 	static int last_used_cpu = 0;
 	taskq_thread_t *tqt;
@@ -1665,7 +1716,7 @@ chksm_taskq_thread_create(taskq_t *tq)
 	tqt->tqt_tq = tq;
 	tqt->tqt_id = TASKQID_INVALID;
 
-	tqt->tqt_thread = spl_kthread_create(chksm_taskq_thread, tqt,
+	tqt->tqt_thread = spl_kthread_create(cksum_taskq_thread, tqt,
 	    "%s", tq->tq_name);
 	if (tqt->tqt_thread == NULL) {
 		kmem_free(tqt, sizeof (taskq_thread_t));
@@ -1686,7 +1737,7 @@ chksm_taskq_thread_create(taskq_t *tq)
 }
 
 taskq_t *
-chksm_taskq_create(const char *name, int nthreads, pri_t pri,
+cksum_taskq_create(const char *name, int nthreads, pri_t pri,
     int minalloc, int maxalloc, uint_t flags)
 {
 	taskq_t *tq;
@@ -1694,7 +1745,7 @@ chksm_taskq_create(const char *name, int nthreads, pri_t pri,
 	int count = 0, rc = 0, i;
 	unsigned long irqflags;
 
-//printk(KERN_WARNING "CHKSM_TASKQ_CREATE: name:%s nthreads:%d \n", name, nthreads);
+	//printk(KERN_WARNING "CKSUM_TASKQ_CREATE: name:%s nthreads:%d \n", name, nthreads);
 	
 	ASSERT(name != NULL);
 	ASSERT(minalloc >= 0);
@@ -1719,9 +1770,9 @@ chksm_taskq_create(const char *name, int nthreads, pri_t pri,
 	INIT_LIST_HEAD(&tq->tq_active_list);
 	tq->tq_name = strdup(name);
 	tq->tq_nactive = 0;
-	//JW
+	//cksum_modi
 	tq->tq_ctxt = 0;
-	tq->jw = 1;
+	tq->tq_ctxt_d = 0;
 	tq->tq_nthreads = 0;
 	tq->tq_nspawn = 0;
 	tq->tq_maxthreads = nthreads;
@@ -1756,7 +1807,7 @@ chksm_taskq_create(const char *name, int nthreads, pri_t pri,
 		nthreads = 1;
 
 	for (i = 0; i < nthreads; i++) {
-		tqt = chksm_taskq_thread_create(tq);
+		tqt = cksum_taskq_thread_create(tq);
 		if (tqt == NULL)
 			rc = 1;
 		else
@@ -1783,7 +1834,7 @@ chksm_taskq_create(const char *name, int nthreads, pri_t pri,
 
 	return (tq);
 }
-EXPORT_SYMBOL(chksm_taskq_create);
+EXPORT_SYMBOL(cksum_taskq_create);
 
 
 
